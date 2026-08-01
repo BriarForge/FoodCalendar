@@ -42,4 +42,4 @@ npm start
 
 Requires Node.js. Run behind a reverse proxy (nginx) for production.
 Use a process supervisor (launchd, systemd, supervisord) to keep it running.
-The companion `localhostmgr` project (under `/Users/mike/Projects/BriarForge/localhostmgr/`) manages local services including Food Calendar.
+The companion `localhostmgr` project (under the BriarForge organization) manages local services including Food Calendar.

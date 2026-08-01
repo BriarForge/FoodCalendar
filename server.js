@@ -1,4 +1,5 @@
 // server.js — Express + static + JSON API
+require('dotenv').config(); // FIRST: load .env before any module that reads process.env
 const path = require('path');
 const express = require('express');
 const {

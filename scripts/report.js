@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // scripts/report.js — render week HTML, optionally upload via xerahscli
 const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const fs = require('fs');
 const { execSync } = require('child_process');
 const { renderWeekHtml } = require('./render');
@@ -32,7 +33,7 @@ fs.writeFileSync(outPath, html);
 console.log(`Wrote ${outPath} (${html.length} bytes)`);
 
 if (args.upload) {
-  const cli = '/Users/mike/.local/bin/xerahscli';
+  const cli = process.env.XERAHS_CLI || 'xerahscli';
   if (!fs.existsSync(cli)) {
     console.error(`xerahscli not found at ${cli}`);
     process.exit(1);
