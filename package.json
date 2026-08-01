@@ -1,0 +1,13 @@
+{
+  "name": "food-calendar",
+  "version": "0.1.0",
+  "description": "Family meal calendar — Node + Express + SQLite",
+  "scripts": {
+    "start": "node server.js",
+    "report": "node scripts/report.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "express": "^4.21.0"
+  }
+}
