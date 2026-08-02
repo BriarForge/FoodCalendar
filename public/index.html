@@ -469,6 +469,7 @@ function renderMealBlock(date, meal, cell) {
 function escapeAttr(s) { return String(s==null?'':s).replace(/"/g,'&quot;'); }
 
 function renderWeekView() {
+  if (!state.week) return;
   const wrap = $('#week-view');
   const users = state.users;
   const joinOpts = (opts, fallback) => {
