@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS meal_entries (
   user_id TEXT NOT NULL,
   name TEXT DEFAULT '',
   eating INTEGER NOT NULL DEFAULT 1,
+  cost REAL,
   PRIMARY KEY (date, meal, user_id),
   FOREIGN KEY (date, meal) REFERENCES meal_slots(date, meal) ON DELETE CASCADE
 );
@@ -82,6 +83,7 @@ ensureColumn('meal_entries', 'options_json', 'TEXT');
 ensureColumn('rules',        'options_json', 'TEXT');
 ensureColumn('meal_slots',   'cost',         'REAL');
 ensureColumn('rules',        'cost',         'REAL');
+ensureColumn('meal_entries', 'cost',         'REAL');
 
 // Backfill: any row with a non-empty name and NULL options_json gets JSON array
 function backfill(table) {
@@ -163,19 +165,20 @@ function resolveSlot(date, meal) {
   ).get(date, meal);
   if (slot) {
     const rawEntries = db.prepare(
-      `SELECT user_id, name, eating, options_json FROM meal_entries
+      `SELECT user_id, name, eating, options_json, cost FROM meal_entries
        WHERE date=? AND meal=? ORDER BY user_id`
     ).all(date, meal);
     const slotOptions = parseOptions(slot.options_json, slot.name);
     let entries = rawEntries.map(e => {
       const options = parseOptions(e.options_json, e.name);
-      return { user_id: e.user_id, name: options[0] || e.name || '', eating: e.eating ? 1 : 0, options };
+      return { user_id: e.user_id, name: options[0] || e.name || '', eating: e.eating ? 1 : 0, options, cost: e.cost != null ? e.cost : null };
     });
     if (slot.mode === 'shared') {
       entries = entries.map(e => e.eating
         ? { ...e, name: slotOptions[0] || e.name || '', options: slotOptions }
         : { ...e, name: '', options: [] });
     }
+    const totalCost = entries.reduce((sum, e) => sum + (e.cost != null ? e.cost : 0), 0);
     return {
       mode: slot.mode,
       name: slotOptions[0] || slot.name || '',
@@ -184,7 +187,7 @@ function resolveSlot(date, meal) {
       options: slotOptions,
       entries,
       source: 'override',
-      cost: slot.cost != null ? slot.cost : null,
+      cost: totalCost > 0 ? totalCost : null,
     };
   }
   // No override — apply rules
@@ -206,24 +209,26 @@ function resolveSlot(date, meal) {
       `SELECT user_id FROM rule_eaters WHERE rule_id=?`
     ).all(sharedRule.id).map(r => r.user_id) : [];
 
-  const entries = SEED_USERS.map(u => {
+  const hasSharedCost = sharedRule && sharedRule.cost != null;
+  const costEach = hasSharedCost ? sharedRule.cost / sharedEaters.length : null;
+  entries = SEED_USERS.map(u => {
     const ind = userEntries.find(r => r.user_id === u.id);
     if (ind) {
       const options = parseOptions(ind.options_json, ind.name);
-      return { user_id: u.id, name: options[0] || ind.name || '', eating: 1, options };
+      return { user_id: u.id, name: options[0] || ind.name || '', eating: 1, options, cost: ind.cost != null ? ind.cost : null };
     }
     if (sharedRule) {
       const eating = sharedEaters.includes(u.id) ? 1 : 0;
-      return { user_id: u.id, name: sharedOptions[0] || sharedRule.name || '', eating, options: eating ? sharedOptions : [] };
+      return { user_id: u.id, name: sharedOptions[0] || sharedRule.name || '', eating, options: eating ? sharedOptions : [], cost: eating && costEach !== null ? costEach : null };
     }
-    return { user_id: u.id, name: '', eating: 0, options: [] };
+    return { user_id: u.id, name: '', eating: 0, options: [], cost: null };
   });
 
   let mode = 'empty';
   if (userEntries.length || sharedRule) {
     mode = sharedRule ? 'shared' : 'individual';
   }
-  const resolvedCost = sharedRule ? sharedRule.cost : (userEntries.length ? (userEntries[0].cost != null ? userEntries[0].cost : null) : null);
+  const totalCost = entries.reduce((sum, e) => sum + (e.cost != null ? e.cost : 0), 0);
   return {
     mode,
     name: sharedOptions[0] || '',
@@ -232,7 +237,7 @@ function resolveSlot(date, meal) {
     options: sharedOptions,
     entries,
     source: sharedRule || userEntries.length ? 'rule' : 'empty',
-    cost: resolvedCost,
+    cost: totalCost > 0 ? totalCost : null,
   };
 }
 
@@ -273,7 +278,6 @@ function upsertSlot(date, meal, body) {
   const notes = body.notes || '';
   const recipe_url = body.recipe_url || '';
   const source = body.source || 'ui';
-  const cost = body.cost != null && body.cost !== '' ? parseFloat(body.cost) : null;
 
   const slotOptions = normalizeOptions(body.options, body.name || '');
   const slotName = slotOptions[0] || body.name || '';
@@ -291,18 +295,19 @@ function upsertSlot(date, meal, body) {
         source=excluded.source,
         options_json=excluded.options_json,
         cost=excluded.cost
-    `).run(date, meal, mode, slotName, notes, recipe_url, source, JSON.stringify(slotOptions), cost);
+    `).run(date, meal, mode, slotName, notes, recipe_url, source, JSON.stringify(slotOptions), null);
 
     db.prepare(`DELETE FROM meal_entries WHERE date=? AND meal=?`).run(date, meal);
 
     const ins = db.prepare(`
-      INSERT INTO meal_entries (date, meal, user_id, name, eating, options_json) VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO meal_entries (date, meal, user_id, name, eating, options_json, cost) VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     for (const e of entries) {
       if (!e || !e.user_id) continue;
       const eOptions = normalizeOptions(e.options, e.name || '');
       const eName = eOptions[0] || e.name || '';
-      ins.run(date, meal, e.user_id, eName, e.eating ? 1 : 0, JSON.stringify(eOptions));
+      const eCost = e.cost != null && e.cost !== '' ? parseFloat(e.cost) : null;
+      ins.run(date, meal, e.user_id, eName, e.eating ? 1 : 0, JSON.stringify(eOptions), eCost);
     }
   });
   tx();

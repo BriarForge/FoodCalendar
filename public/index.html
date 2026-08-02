@@ -75,7 +75,8 @@
   .options-display { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
   .options-display .opt { font-size: 12px; padding: 2px 8px; border-radius: 999px;
                           background: var(--line); color: var(--ink); }
-  .eaters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .eaters { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+  .eater-row { display: flex; align-items: center; gap: 8px; }
   .eaters .chip { display: inline-flex; align-items: center; gap: 6px;
                   padding: 4px 10px; border-radius: 999px; cursor: pointer;
                   border: 1px solid var(--line); user-select: none; font-size: 13px; }
@@ -83,7 +84,7 @@
   .eaters .chip.off { color: var(--muted); opacity: .7; }
 
   .indiv-list { display: grid; gap: 8px; margin-top: 6px; }
-  .indiv-user { display: grid; grid-template-columns: 90px 1fr; align-items: center; gap: 10px; }
+  .indiv-user { display: grid; grid-template-columns: 90px 1fr 90px; align-items: center; gap: 10px; }
   .indiv-user .name {
     font-size: 12px; padding: 4px 10px; border-radius: 999px; color: #1a202c;
     text-align: center; min-width: 64px;
@@ -311,22 +312,25 @@ function renderDayView() {
         const mode = block.dataset.mode;
         const notes = block.querySelector('input.notes')?.value || '';
         const recipe_url = block.querySelector('input.recipe_url')?.value || '';
-        const costEl = block.querySelector('input.cost');
-        const cost = costEl && costEl.value.trim() ? parseFloat(costEl.value) : null;
         const entries = [];
         let body;
         if (mode === 'shared') {
           const options = readOptions(block.querySelector('.shared-row .options-list'));
           block.querySelectorAll('.eaters .chip').forEach(c => {
-            entries.push({ user_id: c.dataset.user, options: [], eating: c.classList.contains('on') ? 1 : 0 });
+            const row = c.closest('.eater-row');
+            const costEl = row ? row.querySelector('.cost') : null;
+            const cost = costEl && costEl.value.trim() ? parseFloat(costEl.value) : null;
+            entries.push({ user_id: c.dataset.user, options: [], eating: c.classList.contains('on') ? 1 : 0, cost });
           });
-          body = { mode, options, name: options[0] || '', notes, recipe_url, entries, source: 'ui', cost };
+          body = { mode, options, name: options[0] || '', notes, recipe_url, entries, source: 'ui' };
         } else {
           block.querySelectorAll('.indiv-user').forEach(u => {
             const opts = readOptions(u.querySelector('.options-list'));
-            entries.push({ user_id: u.dataset.user, options: opts, name: opts[0] || '', eating: 1 });
+            const costEl = u.querySelector('input.cost');
+            const cost = costEl && costEl.value.trim() ? parseFloat(costEl.value) : null;
+            entries.push({ user_id: u.dataset.user, options: opts, name: opts[0] || '', eating: 1, cost });
           });
-          body = { mode, options: [], name: entries[0]?.name || '', notes, recipe_url, entries, source: 'ui', cost };
+          body = { mode, options: [], name: entries[0]?.name || '', notes, recipe_url, entries, source: 'ui' };
         }
         await api(`/api/meals/${date}/${meal}`, { method: 'PUT', body: JSON.stringify(body) });
         await loadWeek();
@@ -350,30 +354,39 @@ function renderDayView() {
         const mode = block.dataset.mode;
         const notes = block.querySelector('input.notes')?.value || '';
         const recipe_url = block.querySelector('input.recipe_url')?.value || '';
-        const costEl = block.querySelector('input.cost');
-        const cost = costEl && costEl.value.trim() ? parseFloat(costEl.value) : null;
         if (mode === 'shared') {
           const options = readOptions(block.querySelector('.shared-row .options-list'));
           if (!options.length) { flash('Nothing to repeat'); return; }
           const eaters = [];
-          block.querySelectorAll('.eaters .chip').forEach(c => {
-            if (c.classList.contains('on')) eaters.push(c.dataset.user);
+          block.querySelectorAll('.eater-row').forEach(row => {
+            const chip = row.querySelector('.chip');
+            if (chip.classList.contains('on')) eaters.push({ user_id: chip.dataset.user });
           });
-          await api('/api/rules', { method: 'POST',
-            body: JSON.stringify({ mode, weekday: dow, meal, options, name: options[0], notes, recipe_url, eaters, cost }) });
-          flash('Recurring rule saved');
+          // Shared repeat: create one rule per eater with their individual cost from meal_entries
+          for (const e of eaters) {
+            const row = [...block.querySelectorAll('.eater-row')].find(r => r.querySelector('.chip').dataset.user === e.user_id);
+            const costEl = row ? row.querySelector('input.cost') : null;
+            const cost = costEl && costEl.value.trim() ? parseFloat(costEl.value) : null;
+            await api('/api/rules', { method: 'POST',
+              body: JSON.stringify({ mode: 'individual', weekday: dow, meal, user_id: e.user_id, options, name: options[0], notes, recipe_url, cost }) });
+          }
+          flash('Recurring rules saved');
         } else {
           const usersWithOptions = [];
           block.querySelectorAll('.indiv-user').forEach(u => {
             const opts = readOptions(u.querySelector('.options-list'));
-            if (opts.length) usersWithOptions.push({ user_id: u.dataset.user, options: opts, name: opts[0] });
+            if (opts.length) {
+              const costEl = u.querySelector('input.cost');
+              const cost = costEl && costEl.value.trim() ? parseFloat(costEl.value) : null;
+              usersWithOptions.push({ user_id: u.dataset.user, options: opts, name: opts[0], cost });
+            }
           });
           if (!usersWithOptions.length) { flash('Nothing to repeat'); return; }
           for (const u of usersWithOptions) {
             await api('/api/rules', { method: 'POST',
-              body: JSON.stringify({ mode: 'individual', weekday: dow, meal, user_id: u.user_id, options: u.options, name: u.name, cost }) });
+              body: JSON.stringify({ mode: 'individual', weekday: dow, meal, user_id: u.user_id, options: u.options, name: u.name, cost: u.cost }) });
           }
-          flash('Recurring rule saved');
+          flash('Recurring rules saved');
         }
         await loadWeek();
         render();
@@ -393,18 +406,26 @@ function renderMealBlock(date, meal, cell) {
     ? cell.options
     : (cell.mode === 'shared' && cell.name ? [cell.name] : []);
   const eaters = state.users.map(u => {
-    const entry = (cell.entries || []).find(e => e.user_id === u.id) || { eating: 0 };
-    return userChip(u, !!entry.eating);
+    const entry = (cell.entries || []).find(e => e.user_id === u.id) || { eating: 0, cost: null };
+    const costVal = entry.cost != null ? Number(entry.cost).toFixed(2) : '';
+    const chip = `<span class="chip ${entry.eating ? 'on' : 'off'}" data-user="${u.id}"
+      style="${entry.eating ? `background:${u.color};border-color:${u.color}` : ''}">${u.display_name}</span>`;
+    return `<div class="eater-row">
+      ${chip}
+      <input class="cost" type="number" min="0" step="0.01" value="${costVal}" placeholder="cost $" style="width:85px" />
+    </div>`;
   }).join('');
   const indiv = state.users.map(u => {
-    const entry = (cell.entries || []).find(e => e.user_id === u.id) || { name: '', options: [] };
+    const entry = (cell.entries || []).find(e => e.user_id === u.id) || { name: '', options: [], cost: null };
     const opts = (entry.options && entry.options.length)
       ? entry.options
       : (entry.name ? [entry.name] : []);
     const html = optionsEditorHtml(opts, `${u.display_name}'s meal`);
+    const costVal = entry.cost != null ? Number(entry.cost).toFixed(2) : '';
     return `<div class="indiv-user" data-user="${u.id}">
       <span class="name" style="background:${u.color}">${u.display_name}</span>
       <div class="user-options">${html}</div>
+      <input class="cost" type="number" min="0" step="0.01" value="${costVal}" placeholder="cost $" style="width:90px" />
     </div>`;
   }).join('');
 
@@ -435,7 +456,6 @@ function renderMealBlock(date, meal, cell) {
     <div class="meal-meta">
       <input class="notes" value="${escapeAttr(cell.notes || '')}" placeholder="notes (optional)" />
       <input class="recipe_url" value="${escapeAttr(cell.recipe_url || '')}" placeholder="recipe URL (optional)" />
-      <input class="cost" type="number" min="0" step="0.01" value="${cell.cost != null ? Number(cell.cost).toFixed(2) : ''}" placeholder="cost $ (optional)" style="width:100px" />
     </div>
 
     <div class="meal-actions">
@@ -494,18 +514,24 @@ function renderWeekView() {
   wrap.innerHTML = `<div class="week-grid">${headerRow}${rows}</div>`;
   // Weekly cost total
   let totalCost = 0;
-  let costCount = 0;
+  let slotCost = 0, entryCost = 0;
   state.week.days.forEach(d => {
     Object.values(d.cells).forEach(cell => {
-      if (cell.cost != null) { totalCost += cell.cost; costCount++; }
+      if (cell.cost != null) slotCost += cell.cost;
+      (cell.entries || []).forEach(e => { if (e.cost != null) entryCost += e.cost; });
     });
   });
   const existingTotal = wrap.querySelector('.week-total');
   if (existingTotal) existingTotal.remove();
-  if (totalCost > 0) {
+  // Use entry-level costs (per-person) as the authoritative total — avoids double-counting
+  // shared meals (slot cost == sum of entry costs). Slot costs shown for context only.
+  if (entryCost > 0) {
     const totalEl = document.createElement('div');
     totalEl.className = 'week-total';
-    totalEl.innerHTML = `<div><div class="label">Weekly cost estimate</div><div class="breakdown">${costCount} meal${costCount !== 1 ? 's' : ''} with cost</div></div><div class="amount">$${totalCost.toFixed(2)}</div>`;
+    const parts = [];
+    if (slotCost > 0) parts.push(`${slotCost.toFixed(2)} shared');
+    if (entryCost > 0) parts.push(`${entryCost.toFixed(2)} total`);
+    totalEl.innerHTML = `<div><div class="label">Weekly cost estimate</div><div class="breakdown">${parts.join(' + ') || 'meals with cost'}</div></div><div class="amount">$${entryCost.toFixed(2)}</div>`;
     wrap.appendChild(totalEl);
   }
   wrap.querySelectorAll('.gc').forEach(c => c.onclick = () => {
