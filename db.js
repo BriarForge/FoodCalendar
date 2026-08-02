@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS meal_slots (
   notes TEXT DEFAULT '',
   recipe_url TEXT DEFAULT '',
   source TEXT DEFAULT 'ui',
+  cost REAL,
   PRIMARY KEY (date, meal)
 );
 
@@ -55,7 +56,8 @@ CREATE TABLE IF NOT EXISTS rules (
   meal TEXT NOT NULL,
   name TEXT NOT NULL,
   notes TEXT DEFAULT '',
-  recipe_url TEXT DEFAULT ''
+  recipe_url TEXT DEFAULT '',
+  cost REAL
 );
 
 CREATE TABLE IF NOT EXISTS rule_eaters (
@@ -66,7 +68,7 @@ CREATE TABLE IF NOT EXISTS rule_eaters (
 );
 `);
 
-// --- Migrations: add options_json if missing ---------------------------------
+// --- Migrations: add missing columns ----------------------------------------
 function ensureColumn(table, col, decl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(r => r.name);
   if (!cols.includes(col)) {
@@ -78,6 +80,8 @@ function ensureColumn(table, col, decl) {
 ensureColumn('meal_slots',   'options_json', 'TEXT');
 ensureColumn('meal_entries', 'options_json', 'TEXT');
 ensureColumn('rules',        'options_json', 'TEXT');
+ensureColumn('meal_slots',   'cost',         'REAL');
+ensureColumn('rules',        'cost',         'REAL');
 
 // Backfill: any row with a non-empty name and NULL options_json gets JSON array
 function backfill(table) {
@@ -100,7 +104,7 @@ const backfilled = {
 
 // --- Seed users from FOOD_USERS env var --------------------------------------
 // FOOD_USERS is a JSON array: [{ id, display_name, color, sort_order }, ...]
-// Example: FOOD_USERS='[{"id":"alice","display_name":"Alice","color":"#c6f6d5","sort_order":0}]'
+// Example: FOOD_USERS='[{\"id\":\"alice\",\"display_name\":\"Alice\",\"color\":\"#c6f6d5\",\"sort_order\":0}]'
 let SEED_USERS = [];
 try {
   if (process.env.FOOD_USERS) {
@@ -152,10 +156,10 @@ function isValidIsoDate(s) {
 }
 
 // --- Resolve a (date, meal) cell to its full view ----------------------------
-// Returns { mode, name, notes, recipe_url, entries: [{user_id, name, eating, options}], options, source }
+// Returns { mode, name, notes, recipe_url, entries: [{user_id, name, eating, options}], options, source, cost }
 function resolveSlot(date, meal) {
   const slot = db.prepare(
-    `SELECT mode, name, notes, recipe_url, options_json FROM meal_slots WHERE date=? AND meal=?`
+    `SELECT mode, name, notes, recipe_url, options_json, cost FROM meal_slots WHERE date=? AND meal=?`
   ).get(date, meal);
   if (slot) {
     const rawEntries = db.prepare(
@@ -180,18 +184,19 @@ function resolveSlot(date, meal) {
       options: slotOptions,
       entries,
       source: 'override',
+      cost: slot.cost != null ? slot.cost : null,
     };
   }
   // No override — apply rules
   const dow = (new Date(date + 'T00:00:00').getDay() + 6) % 7;
   const userEntries = db.prepare(
-    `SELECT u.id AS user_id, u.display_name, u.color, r.name, r.notes, r.options_json
+    `SELECT u.id AS user_id, u.display_name, u.color, r.name, r.notes, r.options_json, r.cost
      FROM rules r
      JOIN users u ON u.id = r.user_id
      WHERE r.mode='individual' AND r.user_id=u.id AND r.weekday=? AND r.meal=?`
   ).all(dow, meal);
   const sharedRules = db.prepare(
-    `SELECT id, name, notes, options_json FROM rules
+    `SELECT id, name, notes, options_json, cost FROM rules
      WHERE mode='shared' AND weekday=? AND meal=?`
   ).all(dow, meal);
   const sharedRule = sharedRules[0] || null;
@@ -218,6 +223,7 @@ function resolveSlot(date, meal) {
   if (userEntries.length || sharedRule) {
     mode = sharedRule ? 'shared' : 'individual';
   }
+  const resolvedCost = sharedRule ? sharedRule.cost : (userEntries.length ? (userEntries[0].cost != null ? userEntries[0].cost : null) : null);
   return {
     mode,
     name: sharedOptions[0] || '',
@@ -226,6 +232,7 @@ function resolveSlot(date, meal) {
     options: sharedOptions,
     entries,
     source: sharedRule || userEntries.length ? 'rule' : 'empty',
+    cost: resolvedCost,
   };
 }
 
@@ -266,6 +273,7 @@ function upsertSlot(date, meal, body) {
   const notes = body.notes || '';
   const recipe_url = body.recipe_url || '';
   const source = body.source || 'ui';
+  const cost = body.cost != null && body.cost !== '' ? parseFloat(body.cost) : null;
 
   const slotOptions = normalizeOptions(body.options, body.name || '');
   const slotName = slotOptions[0] || body.name || '';
@@ -273,16 +281,17 @@ function upsertSlot(date, meal, body) {
 
   const tx = db.transaction(() => {
     db.prepare(`
-      INSERT INTO meal_slots (date, meal, mode, name, notes, recipe_url, source, options_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO meal_slots (date, meal, mode, name, notes, recipe_url, source, options_json, cost)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(date, meal) DO UPDATE SET
         mode=excluded.mode,
         name=excluded.name,
         notes=excluded.notes,
         recipe_url=excluded.recipe_url,
         source=excluded.source,
-        options_json=excluded.options_json
-    `).run(date, meal, mode, slotName, notes, recipe_url, source, JSON.stringify(slotOptions));
+        options_json=excluded.options_json,
+        cost=excluded.cost
+    `).run(date, meal, mode, slotName, notes, recipe_url, source, JSON.stringify(slotOptions), cost);
 
     db.prepare(`DELETE FROM meal_entries WHERE date=? AND meal=?`).run(date, meal);
 
@@ -328,11 +337,12 @@ function createRule(body) {
   const eaters = Array.isArray(body.eaters) ? body.eaters : [];
   const options = normalizeOptions(body.options, body.name || '');
   const name = options[0] || body.name || '';
+  const cost = body.cost != null && body.cost !== '' ? parseFloat(body.cost) : null;
   const tx = db.transaction(() => {
     const info = db.prepare(`
-      INSERT INTO rules (mode, user_id, weekday, meal, name, notes, recipe_url, options_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(mode, user_id, weekday, meal, name, notes, recipe_url, JSON.stringify(options));
+      INSERT INTO rules (mode, user_id, weekday, meal, name, notes, recipe_url, options_json, cost)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(mode, user_id, weekday, meal, name, notes, recipe_url, JSON.stringify(options), cost);
     const ruleId = info.lastInsertRowid;
     if (mode === 'shared') {
       const ins = db.prepare(
@@ -347,6 +357,38 @@ function createRule(body) {
 
 function deleteRule(id) {
   db.prepare(`DELETE FROM rules WHERE id=?`).run(Number(id));
+}
+
+function updateRule(id, body) {
+  const n = Number(id);
+  const existing = db.prepare(`SELECT * FROM rules WHERE id=?`).get(n);
+  if (!existing) throw new Error(`Rule ${id} not found`);
+
+  const mode = body.mode !== undefined ? (body.mode === 'shared' ? 'shared' : 'individual') : existing.mode;
+  const hasOptions = body.options !== undefined || body.name !== undefined;
+  const options = hasOptions ? normalizeOptions(body.options, body.name !== undefined ? body.name : existing.name) : parseOptions(existing.options_json, existing.name);
+  const name = options[0] || existing.name;
+  const notes = body.notes !== undefined ? body.notes : existing.notes;
+  const recipe_url = body.recipe_url !== undefined ? body.recipe_url : existing.recipe_url;
+  const cost = body.cost !== undefined ? (body.cost !== '' && body.cost != null ? parseFloat(body.cost) : null) : existing.cost;
+  const eaters = Array.isArray(body.eaters) ? body.eaters
+    : (body.eaters !== undefined ? [] : db.prepare(`SELECT user_id FROM rule_eaters WHERE rule_id=?`).all(n).map(r => r.user_id));
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE rules SET
+        mode=?, name=?, notes=?, recipe_url=?, options_json=?, cost=?
+      WHERE id=?
+    `).run(mode, name, notes, recipe_url, JSON.stringify(options), cost, n);
+
+    db.prepare(`DELETE FROM rule_eaters WHERE rule_id=?`).run(n);
+    if (mode === 'shared') {
+      const ins = db.prepare(`INSERT INTO rule_eaters (rule_id, user_id) VALUES (?, ?)`);
+      for (const u of eaters) ins.run(n, u);
+    }
+  });
+  tx();
+  return db.prepare(`SELECT * FROM rules WHERE id=?`).get(n);
 }
 
 function listUsers() {
@@ -366,6 +408,7 @@ module.exports = {
   listRules,
   createRule,
   deleteRule,
+  updateRule,
   listUsers,
   normalizeOptions,
   parseOptions,

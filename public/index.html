@@ -116,6 +116,23 @@
     font-size: 12px; opacity: 0; transition: opacity .2s;
   }
   .saved-flash.show { opacity: 1; }
+
+  .cost-badge {
+    font-size: 12px; font-weight: 600; color: var(--accent);
+    background: #ebf8ff; border: 1px solid #90cdf4;
+    padding: 2px 8px; border-radius: 999px;
+  }
+
+  .week-total {
+    margin-top: 16px; padding: 12px 16px; background: #ebf8ff;
+    border: 1px solid #90cdf4; border-radius: 10px;
+    font-size: 14px; font-weight: 600; color: #2b6cb0;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .week-total .label { font-size: 12px; font-weight: 500; text-transform: uppercase;
+                        letter-spacing: .05em; color: #4a5568; }
+  .week-total .amount { font-size: 20px; }
+  .week-total .breakdown { font-size: 11px; color: #718096; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -294,6 +311,8 @@ function renderDayView() {
         const mode = block.dataset.mode;
         const notes = block.querySelector('input.notes')?.value || '';
         const recipe_url = block.querySelector('input.recipe_url')?.value || '';
+        const costEl = block.querySelector('input.cost');
+        const cost = costEl && costEl.value.trim() ? parseFloat(costEl.value) : null;
         const entries = [];
         let body;
         if (mode === 'shared') {
@@ -301,13 +320,13 @@ function renderDayView() {
           block.querySelectorAll('.eaters .chip').forEach(c => {
             entries.push({ user_id: c.dataset.user, options: [], eating: c.classList.contains('on') ? 1 : 0 });
           });
-          body = { mode, options, name: options[0] || '', notes, recipe_url, entries, source: 'ui' };
+          body = { mode, options, name: options[0] || '', notes, recipe_url, entries, source: 'ui', cost };
         } else {
           block.querySelectorAll('.indiv-user').forEach(u => {
             const opts = readOptions(u.querySelector('.options-list'));
             entries.push({ user_id: u.dataset.user, options: opts, name: opts[0] || '', eating: 1 });
           });
-          body = { mode, options: [], name: entries[0]?.name || '', notes, recipe_url, entries, source: 'ui' };
+          body = { mode, options: [], name: entries[0]?.name || '', notes, recipe_url, entries, source: 'ui', cost };
         }
         await api(`/api/meals/${date}/${meal}`, { method: 'PUT', body: JSON.stringify(body) });
         await loadWeek();
@@ -331,6 +350,8 @@ function renderDayView() {
         const mode = block.dataset.mode;
         const notes = block.querySelector('input.notes')?.value || '';
         const recipe_url = block.querySelector('input.recipe_url')?.value || '';
+        const costEl = block.querySelector('input.cost');
+        const cost = costEl && costEl.value.trim() ? parseFloat(costEl.value) : null;
         if (mode === 'shared') {
           const options = readOptions(block.querySelector('.shared-row .options-list'));
           if (!options.length) { flash('Nothing to repeat'); return; }
@@ -339,7 +360,7 @@ function renderDayView() {
             if (c.classList.contains('on')) eaters.push(c.dataset.user);
           });
           await api('/api/rules', { method: 'POST',
-            body: JSON.stringify({ mode, weekday: dow, meal, options, name: options[0], notes, recipe_url, eaters }) });
+            body: JSON.stringify({ mode, weekday: dow, meal, options, name: options[0], notes, recipe_url, eaters, cost }) });
           flash('Recurring rule saved');
         } else {
           const usersWithOptions = [];
@@ -350,9 +371,9 @@ function renderDayView() {
           if (!usersWithOptions.length) { flash('Nothing to repeat'); return; }
           for (const u of usersWithOptions) {
             await api('/api/rules', { method: 'POST',
-              body: JSON.stringify({ mode: 'individual', weekday: dow, meal, user_id: u.user_id, options: u.options, name: u.name }) });
+              body: JSON.stringify({ mode: 'individual', weekday: dow, meal, user_id: u.user_id, options: u.options, name: u.name, cost }) });
           }
-          flash(`${usersWithOptions.length} recurring rule(s) saved`);
+          flash('Recurring rule saved');
         }
         await loadWeek();
         render();
@@ -390,8 +411,9 @@ function renderMealBlock(date, meal, cell) {
   return `<section class="meal-block" data-date="${date}" data-meal="${meal}" data-mode="${mode}">
     <header>
       <h2>${MEAL_LABELS[meal]}</h2>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${sourceChip}
+        ${cell.cost != null ? `<span class="cost-badge">$${Number(cell.cost).toFixed(2)}</span>` : ''}
         <div class="mode-toggle">
           <button data-mode="shared" class="${mode==='shared'?'active':''}">Shared</button>
           <button data-mode="individual" class="${mode==='individual'?'active':''}">Individual</button>
@@ -413,6 +435,7 @@ function renderMealBlock(date, meal, cell) {
     <div class="meal-meta">
       <input class="notes" value="${escapeAttr(cell.notes || '')}" placeholder="notes (optional)" />
       <input class="recipe_url" value="${escapeAttr(cell.recipe_url || '')}" placeholder="recipe URL (optional)" />
+      <input class="cost" type="number" min="0" step="0.01" value="${cell.cost != null ? Number(cell.cost).toFixed(2) : ''}" placeholder="cost $ (optional)" style="width:100px" />
     </div>
 
     <div class="meal-actions">
@@ -469,6 +492,22 @@ function renderWeekView() {
     return `<div class="gh">${DAY_NAMES[i]}<br><span style="font-weight:normal;font-size:11px">${dt.getMonth()+1}/${dt.getDate()}</span></div>`;
   }).join('');
   wrap.innerHTML = `<div class="week-grid">${headerRow}${rows}</div>`;
+  // Weekly cost total
+  let totalCost = 0;
+  let costCount = 0;
+  state.week.days.forEach(d => {
+    Object.values(d.cells).forEach(cell => {
+      if (cell.cost != null) { totalCost += cell.cost; costCount++; }
+    });
+  });
+  const existingTotal = wrap.querySelector('.week-total');
+  if (existingTotal) existingTotal.remove();
+  if (totalCost > 0) {
+    const totalEl = document.createElement('div');
+    totalEl.className = 'week-total';
+    totalEl.innerHTML = `<div><div class="label">Weekly cost estimate</div><div class="breakdown">${costCount} meal${costCount !== 1 ? 's' : ''} with cost</div></div><div class="amount">$${totalCost.toFixed(2)}</div>`;
+    wrap.appendChild(totalEl);
+  }
   wrap.querySelectorAll('.gc').forEach(c => c.onclick = () => {
     state.selectedDayIndex = Number(c.dataset.day);
     state.view = 'day';

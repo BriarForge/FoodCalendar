@@ -10,6 +10,7 @@ const {
   createRule,
   deleteRule,
   listUsers,
+  updateRule,
 } = require('./db');
 
 const app = express();
@@ -52,6 +53,15 @@ app.post('/api/rules', (req, res) => {
   try {
     const id = createRule(req.body || {});
     res.json({ id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.patch('/api/rules/:id', (req, res) => {
+  try {
+    const result = updateRule(req.params.id, req.body || {});
+    res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
