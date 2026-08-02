@@ -156,6 +156,14 @@
   <div id="week-view" style="display:none"></div>
 </main>
 
+<div id="debug-panel" style="display:none; position:fixed; bottom:0; left:0; right:0; background:#1a1a2e; color:#e0e0e0; font:13px/1.5 monospace; padding:12px; max-height:40vh; overflow-y:auto; z-index:9999; border-top:2px solid #d4af37;">
+  <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+    <strong style="color:#d4af37;">DEBUG</strong>
+    <button onclick="debugPanelClear()" style="background:#333; color:#e0e0e0; border:1px solid #555; padding:2px 8px; cursor:pointer; font:inherit;">clear</button>
+  </div>
+  <div id="debug-log"></div>
+</div>
+
 <div id="flash" class="saved-flash">Saved</div>
 
 <script>
@@ -171,6 +179,34 @@ const state = {
   week: null,
   selectedDayIndex: 0,
 };
+
+function debug(msg, data) {
+  const panel = $('#debug-panel');
+  const log = $('#debug-log');
+  if (!panel || !log) return;
+  panel.style.display = 'block';
+  const entry = document.createElement('div');
+  const ts = new Date().toLocaleTimeString();
+  entry.style.borderBottom = '1px solid #333';
+  entry.style.paddingBottom = '4px';
+  entry.style.marginBottom = '4px';
+  let txt = `<span style="color:#888">[${ts}]</span> <span style="color:#d4af37">${msg}</span>`;
+  if (data !== undefined) {
+    try {
+      txt += `<pre style="margin:4px 0 0 12px; color:#a0a0a0; font-size:11px; white-space:pre-wrap;">${JSON.stringify(data, null, 2)}</pre>`;
+    } catch(e) {
+      txt += ` <em style="color:#f66">serialization error: ${e}</em>`;
+    }
+  }
+  entry.innerHTML = txt;
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function debugPanelClear() {
+  const log = $('#debug-log');
+  if (log) log.innerHTML = '';
+}
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -200,10 +236,24 @@ async function api(path, opts = {}) {
 }
 
 async function loadUsers() {
-  state.users = await api('/api/users');
+  debug('loadUsers → fetching /api/users');
+  try {
+    state.users = await api('/api/users');
+    debug('loadUsers → ok', { count: state.users.length, ids: state.users.map(u => u.id) });
+  } catch(e) {
+    debug('loadUsers → ERROR', { message: e.message });
+    throw e;
+  }
 }
 async function loadWeek() {
-  state.week = await api(`/api/week?start=${state.weekStart}`);
+  debug(`loadWeek → fetching /api/week?start=${state.weekStart}`);
+  try {
+    state.week = await api(`/api/week?start=${state.weekStart}`);
+    debug('loadWeek → ok', { start: state.week.start_iso, days: state.week.days.length });
+  } catch(e) {
+    debug('loadWeek → ERROR', { message: e.message });
+    throw e;
+  }
 }
 
 function renderDaysNav() {
@@ -550,19 +600,24 @@ function flash(msg) {
 }
 
 function render() {
-  renderDaysNav();
-  if (state.view === 'day') {
-    $('#day-view').style.display = '';
-    $('#week-view').style.display = 'none';
-    $('#view-day').classList.add('active');
-    $('#view-week').classList.remove('active');
-    renderDayView();
-  } else {
-    $('#day-view').style.display = 'none';
-    $('#week-view').style.display = '';
-    $('#view-week').classList.add('active');
-    $('#view-day').classList.remove('active');
-    renderWeekView();
+  debug(`render() → view=${state.view} week=${!!state.week} selectedDayIndex=${state.selectedDayIndex}`);
+  try {
+    renderDaysNav();
+    if (state.view === 'day') {
+      $('#day-view').style.display = '';
+      $('#week-view').style.display = 'none';
+      $('#view-day').classList.add('active');
+      $('#view-week').classList.remove('active');
+      renderDayView();
+    } else {
+      $('#day-view').style.display = 'none';
+      $('#week-view').style.display = '';
+      $('#view-week').classList.add('active');
+      $('#view-day').classList.remove('active');
+      renderWeekView();
+    }
+  } catch(e) {
+    debug(`render() → CRASH: ${e.message}`, { stack: e.stack });
   }
 }
 
